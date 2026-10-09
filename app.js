@@ -196,11 +196,20 @@ window.editTask=(t)=>{const isNew=!t||!t.id;t={status:'todo',priority:'P3',recur
   <label>Начало<input type="date" name="start" value="${t.start||''}"></label><label>Срок<input type="date" name="due" value="${t.due||''}"></label>
   <label>Исполнитель<input name="assignee" list="ppl" value="${esc(t.assignee||'')}"><datalist id="ppl">${people().map(p=>`<option value="${esc(p)}">`).join('')}</datalist></label><label>Повтор<select name="recur">${opt(REC,t.recur)}</select></label><label>Ждём от (waiting-for)<input name="waitingFor" value="${esc(t.waitingFor||'')}"></label><label>Встреча-источник<select name="meetingId"><option value="">—</option>${D.meetings.map(m=>`<option value="${m.id}" ${m.id===t.meetingId?'selected':''}>${fd(m.date)} ${esc(m.title)}</option>`).join('')}</select></label></div>
   <label>Желаемый результат<textarea name="expected">${esc(t.expected||'')}</textarea></label><label>Фактический результат<textarea name="actual">${esc(t.actual||'')}</textarea></label>
-  <label>Зависит от (предшественники, Ctrl/Cmd — несколько)<select name="deps" multiple size="5">${D.tasks.filter(x=>x.id!==t.id).map(x=>`<option value="${x.id}" ${(t.deps||[]).includes(x.id)?'selected':''}>${esc(x.title)} · ${esc(pname(x.projectId))}</option>`).join('')}</select></label>
+  <details id="depBox" ${(t.deps||[]).length?'open':''} style="border:1px solid var(--b);border-radius:8px;padding:8px"><summary style="cursor:pointer"><b>Связи — предшествующие задачи</b> <span class="muted" id="depCnt">${(t.deps||[]).length?'выбрано: '+t.deps.length:'нет связей'}</span></summary>
+  <div class="row" style="margin:8px 0"><input id="depQ" placeholder="Поиск задачи" style="flex:1"><label class="row" style="color:var(--t)"><input type="checkbox" id="depAll" style="width:auto"> из всех проектов</label><button type="button" class="ghost" id="depClr">Снять все</button></div>
+  <div id="depList" style="max-height:200px;overflow:auto;display:grid;gap:2px"></div><div class="muted" style="font-size:12px">Задача начнётся после выбранных. Если ничего не отмечено, связей нет.</div></details>
   <label>Заметки<textarea name="notes">${esc(t.notes||'')}</textarea></label>`,
-  (v,f)=>{v.deps=[...f.querySelector('[name=deps]').selectedOptions].map(o=>o.value);const st=v.status;delete v.status;
+  (v,f)=>{v.deps=[...sel];const st=v.status;delete v.status;
     if(isNew){t={...t,...v,id:uid(),created:TODAY(),status:'todo'};D.tasks.push(t)}else Object.assign(t,v);
-    if(st==='waiting'&&t.status!=='waiting')t.waitingSince=TODAY();setStatus(t,st)},isNew?null:()=>{D.tasks=D.tasks.filter(x=>x.id!==t.id);D.tasks.forEach(x=>x.deps=(x.deps||[]).filter(d=>d!==t.id))})};
+    if(st==='waiting'&&t.status!=='waiting')t.waitingSince=TODAY();setStatus(t,st)},isNew?null:()=>{D.tasks=D.tasks.filter(x=>x.id!==t.id);D.tasks.forEach(x=>x.deps=(x.deps||[]).filter(d=>d!==t.id))});
+  const sel=new Set(t.deps||[]),f=$('#dlgForm'),pj=()=>f.querySelector('[name=projectId]').value;
+  const draw=()=>{const q=$('#depQ').value.toLowerCase(),all=$('#depAll').checked;
+    const l=D.tasks.filter(x=>x.id!==t.id&&(sel.has(x.id)||((all||x.projectId===pj())&&(!q||x.title.toLowerCase().includes(q)))));
+    $('#depList').innerHTML=l.length?l.map(x=>`<label class="row" style="color:var(--t);font-size:13px"><input type="checkbox" style="width:auto" data-dep="${x.id}" ${sel.has(x.id)?'checked':''}> ${esc(x.title)} <span class="muted">· ${esc(pname(x.projectId))} · ${ST[x.status]}</span></label>`).join(''):'<span class="muted">Нет задач в этом проекте</span>';
+    $('#depCnt').textContent=sel.size?'выбрано: '+sel.size:'нет связей'};
+  $('#depList').onchange=ev=>{const id=ev.target.dataset.dep;if(!id)return;ev.target.checked?sel.add(id):sel.delete(id);draw()};
+  $('#depQ').oninput=draw;$('#depAll').onchange=draw;f.querySelector('[name=projectId]').addEventListener('change',draw);$('#depClr').onclick=()=>{sel.clear();draw()};draw()};
 window.editProject=(p)=>{const isNew=!p;p=p||{stage:'Планирование',healthMode:'auto',progressMode:'auto',milestones:[]};let ms=[...(p.milestones||[])];
   const msHTML=()=>ms.map((m,i)=>`<div class="ms"><input data-mn="${i}" value="${esc(m.name)}"><input type="date" data-md="${i}" value="${m.date||''}"><input type="checkbox" data-mc="${i}" ${m.done?'checked':''} title="Достигнута"><button type="button" class="ghost" data-mx="${i}">×</button></div>`).join('');
   dialog(`<h2 style="margin:0">${isNew?'Новый проект':'Проект'}</h2><label>Название<input name="name" required value="${esc(p.name||'')}"></label>
