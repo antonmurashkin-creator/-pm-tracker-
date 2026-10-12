@@ -1,5 +1,5 @@
 'use strict';
-const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const iso=d=>{const x=new Date(d);return new Date(x.getTime()-x.getTimezoneOffset()*6e4).toISOString().slice(0,10)};
 const TODAY=()=>iso(new Date()),addD=(s,n)=>{const d=new Date(s);d.setDate(d.getDate()+n);return iso(d)};
@@ -23,11 +23,13 @@ const people=()=>[...new Set(D.tasks.map(t=>t.assignee).filter(Boolean))].sort((
 const pname=id=>P(id)?.name||'—',ptag=p=>`<span class="tag P${p}">${esc(p||'P3')}</span>`,htag=h=>`<span class="tag ${h}">${HEALTH[h]||h}</span>`;
 
 /* ---------- синхронизация ---------- */
-function syncLabel(){$('#syncState').textContent=!cfg.url?'Только локально':(navigator.onLine?'':'Офлайн · ')+(dirty?'Есть несинхр. изменения':'Синхронизировано '+(cfg.last?new Date(cfg.last).toLocaleTimeString('ru-RU'):''))}
-async function pull(){if(!cfg.url)return;try{const r=await fetch(cfg.url+(cfg.token?'?token='+encodeURIComponent(cfg.token):''));const j=await r.json();if(j.error)throw j.error;
+let syncing=false,pushing=false;
+function syncLabel(){const el=$('#syncState');if(!el)return;el.textContent=!cfg.url?'Только локально':(navigator.onLine?'':'Офлайн · ')+(syncing?'Синхронизация…':dirty?'Есть несинхр. изменения':'Синхронизировано '+(cfg.last?new Date(cfg.last).toLocaleTimeString('ru-RU'):''))}
+async function pull(){if(!cfg.url)return;syncing=true;syncLabel();try{const r=await fetch(cfg.url+(cfg.token?'?token='+encodeURIComponent(cfg.token):''));const j=await r.json();if(!j||typeof j!=='object'||j.error)throw (j&&j.error)||'Некорректный ответ сервера';
+  ['projects','tasks','risks','meetings','reviews'].forEach(k=>j[k]=Array.isArray(j[k])?j[k]:[]);
   if(dirty&&!confirm('Есть локальные изменения. Заменить их данными из Google Таблицы? (Отмена — отправить локальные)'))return push();
-  ['projects','tasks','risks','meetings','reviews'].forEach(k=>D[k]=j[k]||[]);LS.setItem(KEY,JSON.stringify(D));dirty=false;cfg.dirty=false;cfg.last=Date.now();saveCfg();syncLabel();render();takeInbox(j)}catch(e){alert('Ошибка загрузки: '+e)}}
-async function push(silent){if(!cfg.url||!navigator.onLine)return;try{const r=await fetch(cfg.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({token:cfg.token,data:D,taken:cfg.taken||[]})});const j=await r.json();if(!j.ok)throw j.error;cfg.taken=[];dirty=false;cfg.dirty=false;cfg.last=Date.now();saveCfg();syncLabel()}catch(e){if(!silent)alert('Ошибка отправки: '+e);syncLabel()}}
+  ['projects','tasks','risks','meetings','reviews'].forEach(k=>D[k]=j[k]);LS.setItem(KEY,JSON.stringify(D));dirty=false;cfg.dirty=false;cfg.last=Date.now();saveCfg();render();if(typeof takeInbox==='function')takeInbox(j)}catch(e){alert('Ошибка загрузки: '+e)}finally{syncing=false;syncLabel()}}
+async function push(silent){if(!cfg.url){syncLabel();return false}if(!navigator.onLine){syncLabel();return false}if(pushing)return false;pushing=true;syncing=true;syncLabel();try{const r=await fetch(cfg.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({token:cfg.token,data:D,taken:cfg.taken||[]})});const j=await r.json();if(!j||!j.ok)throw (j&&j.error)||'Некорректный ответ сервера';cfg.taken=[];dirty=false;cfg.dirty=false;cfg.last=Date.now();saveCfg();return true}catch(e){if(!silent)alert('Ошибка отправки: '+e);return false}finally{pushing=false;syncing=false;syncLabel()}}
 window.addEventListener('online',()=>dirty&&push(true));window.addEventListener('offline',syncLabel);
 
 /* ---------- повторяющиеся ---------- */
@@ -60,6 +62,7 @@ const H=new Map();let HI=0;function on(fn){const k='h'+(HI++);H.set(k,fn);return
 ['click','change','input'].forEach(ev=>document.addEventListener(ev,e=>{const el=e.target.closest('[data-'+ev+']');if(!el)return;const f=H.get(el.dataset[ev]);if(f){if(ev==='click'&&el.tagName==='A')e.preventDefault();f.call(el,e)}}));
 document.addEventListener('click',e=>{const a=e.target.closest('#menu a');if(!a)return;e.preventDefault();go(a.dataset.v)});
 function go(v){view=v;try{history.replaceState(null,'','#'+v)}catch(_){}render();window.scrollTo(0,0)}
+
 R.today=()=>{act(`<button data-click="${on(function(e){editTask()})}">+ Задача</button><button class="ghost" data-click="${on(function(e){exportCSV(todayList(),'сегодня')})}">CSV</button><button class="ghost" data-click="${on(function(e){print()})}">Печать/PDF</button>`);
   const open=flt(D.tasks.filter(t=>t.status!=='done'&&t.status!=='backlog')),td=TODAY(),wk=addD(td,7);
   const over=sortT(open.filter(isOver)),today=sortT(open.filter(t=>t.due===td)),week=sortT(open.filter(t=>t.due>td&&t.due<=wk)),doing=sortT(open.filter(t=>t.status==='doing'&&!(t.due&&t.due<=wk))),wait=open.filter(t=>t.status==='waiting');
@@ -175,12 +178,13 @@ R.settings=()=>{V(`<div class="card" style="max-width:640px;display:grid;gap:10p
   <ol class="muted" style="margin:0;padding-left:18px"><li>Создайте Google Таблицу на Диске.</li><li>Расширения → Apps Script, вставьте код из Code.gs, сохраните.</li><li>Развернуть → Новое развертывание → Веб-приложение; «Запуск от имени: Я», «Доступ: Все». Скопируйте URL /exec.</li><li>Вставьте URL сюда. Данные хранятся листами projects, tasks, risks, meetings, reviews.</li></ol></div>
   <div class="card" style="max-width:640px;margin-top:12px;display:grid;gap:10px"><b>Резервная копия</b><div class="row"><button class="ghost" data-click="${on(function(e){dl(new Blob([JSON.stringify(D,null,1)],{type:'application/json'}),'pm-backup-'+TODAY()+'.json')})}">Скачать JSON</button>
   <label class="btn ghost" style="background:var(--s2);color:var(--t);display:inline-block">Заменить из JSON<input type="file" accept=".json" style="display:none" data-change="${on(function(e){impJ(this.files[0])})}"></label><label class="btn ghost" style="background:var(--s2);color:var(--t);display:inline-block">Добавить из JSON<input type="file" accept=".json" style="display:none" data-change="${on(function(e){mergeJ(this.files[0])})}"></label><button class="ghost" data-click="${on(function(e){exportCSV(D.tasks.map(rowT),'все_задачи')})}">Все задачи CSV</button><button class="ghost" data-click="${on(function(e){demo()})}">Демо-данные</button></div></div>`)};
-window.impJ=f=>f.text().then(t=>{const j=JSON.parse(t);if(confirm('Заменить все данные?')){D=j;save()}});
+function normalizeData(j){const base={projects:[],tasks:[],risks:[],meetings:[],reviews:[]};j=(j&&typeof j==='object')?j:{};for(const k of Object.keys(base))base[k]=Array.isArray(j[k])?j[k]:[];return base}
+window.impJ=f=>f.text().then(t=>{const j=normalizeData(JSON.parse(t));if(confirm('Заменить все данные?')){D=j;save()}});
 
 /* ---------- экспорт ---------- */
 function dl(b,n){const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=n;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000)}
 window.exportCSV=(rows,name)=>{rows=rows.map(r=>r.title!==undefined&&r.status in ST?rowT(r):r);if(!rows.length)return alert('Нет данных');const k=[...new Set(rows.flatMap(Object.keys))];
-  const c=v=>{v=v==null?'':typeof v==='object'?JSON.stringify(v):String(v);return/[;"\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  const c=v=>{v=v==null?'':typeof v==='object'?JSON.stringify(v):String(v);return/[;\"\n]/.test(v)?'"'+v.replace(/\"/g,'""')+'"':v};
   dl(new Blob(['\ufeff'+[k.join(';'),...rows.map(r=>k.map(x=>c(r[x])).join(';'))].join('\r\n')],{type:'text/csv'}),name+'.csv')};
 
 /* ---------- формы ---------- */
@@ -200,9 +204,12 @@ window.editTask=(t)=>{const isNew=!t||!t.id;t={status:'todo',priority:'P3',recur
   <div class="row" style="margin:8px 0"><input id="depQ" placeholder="Поиск задачи" style="flex:1"><label class="row" style="color:var(--t)"><input type="checkbox" id="depAll" style="width:auto"> из всех проектов</label><button type="button" class="ghost" id="depClr">Снять все</button></div>
   <div id="depList" style="max-height:200px;overflow:auto;display:grid;gap:2px"></div><div class="muted" style="font-size:12px">Задача начнётся после выбранных. Если ничего не отмечено, связей нет.</div></details>
   <label>Заметки<textarea name="notes">${esc(t.notes||'')}</textarea></label>`,
-  (v,f)=>{v.deps=[...sel];const st=v.status;delete v.status;
-    if(isNew){t={...t,...v,id:uid(),created:TODAY(),status:'todo'};D.tasks.push(t)}else Object.assign(t,v);
-    if(st==='waiting'&&t.status!=='waiting')t.waitingSince=TODAY();setStatus(t,st)},isNew?null:()=>{D.tasks=D.tasks.filter(x=>x.id!==t.id);D.tasks.forEach(x=>x.deps=(x.deps||[]).filter(d=>d!==t.id))});
+  (v,f)=>{v.deps=[...sel];const prevStatus=t.status,st=v.status||t.status||'todo';delete v.status;
+    if(isNew){t={...t,...v,id:uid(),created:TODAY(),status:st}}else Object.assign(t,v);
+    if(st==='waiting'&&prevStatus!=='waiting'&&!t.waitingSince)t.waitingSince=TODAY();
+    if(st!=='waiting')t.waitingSince='';
+    setStatus(t,st);
+    if(isNew)D.tasks.push(t)},isNew?null:()=>{D.tasks=D.tasks.filter(x=>x.id!==t.id);D.tasks.forEach(x=>x.deps=(x.deps||[]).filter(d=>d!==t.id))});
   const sel=new Set(t.deps||[]),f=$('#dlgForm'),pj=()=>f.querySelector('[name=projectId]').value;
   const draw=()=>{const q=$('#depQ').value.toLowerCase(),all=$('#depAll').checked;
     const l=D.tasks.filter(x=>x.id!==t.id&&(sel.has(x.id)||((all||x.projectId===pj())&&(!q||x.title.toLowerCase().includes(q)))));
@@ -210,6 +217,7 @@ window.editTask=(t)=>{const isNew=!t||!t.id;t={status:'todo',priority:'P3',recur
     $('#depCnt').textContent=sel.size?'выбрано: '+sel.size:'нет связей'};
   $('#depList').onchange=ev=>{const id=ev.target.dataset.dep;if(!id)return;ev.target.checked?sel.add(id):sel.delete(id);draw()};
   $('#depQ').oninput=draw;$('#depAll').onchange=draw;f.querySelector('[name=projectId]').addEventListener('change',draw);$('#depClr').onclick=()=>{sel.clear();draw()};draw()};
+
 window.editProject=(p)=>{const isNew=!p;p=p||{stage:'Планирование',healthMode:'auto',progressMode:'auto',milestones:[]};let ms=[...(p.milestones||[])];
   const msHTML=()=>ms.map((m,i)=>`<div class="ms"><input data-mn="${i}" value="${esc(m.name)}"><input type="date" data-md="${i}" value="${m.date||''}"><input type="checkbox" data-mc="${i}" ${m.done?'checked':''} title="Достигнута"><button type="button" class="ghost" data-mx="${i}">×</button></div>`).join('');
   dialog(`<h2 style="margin:0">${isNew?'Новый проект':'Проект'}</h2><label>Название<input name="name" required value="${esc(p.name||'')}"></label>
@@ -217,53 +225,72 @@ window.editProject=(p)=>{const isNew=!p;p=p||{stage:'Планирование',h
   <label>Health<select name="health"><option value="auto" ${p.healthMode==='auto'?'selected':''}>Авто (по просрочкам и рискам)</option>${opt(HEALTH,p.healthMode==='auto'?'':p.health)}</select></label>
   <label>% выполнения (пусто — авто по задачам)<input type="number" min="0" max="100" name="progress" value="${p.progressMode==='manual'?p.progress:''}"></label>
   <label>Начало<input type="date" name="start" value="${p.start||''}"></label><label>Окончание<input type="date" name="end" value="${p.end||''}"></label></div>
-  <label>Цель / желаемый результат<textarea name="goal">${esc(p.goal||'')}</textarea></label><label>Фактический результат<textarea name="result">${esc(p.result||'')}</textarea></label>
-  <div><b>Вехи (milestones)</b><div id="msl" style="display:grid;gap:6px;margin:6px 0">${msHTML()}</div><button type="button" class="ghost" id="msa">+ Веха</button></div>`,
-  v=>{const o={name:v.name,owner:v.owner,stage:v.stage,start:v.start,end:v.end,goal:v.goal,result:v.result,milestones:ms.filter(m=>m.name)};
-    if(v.health==='auto'){o.healthMode='auto';o.health=''}else{o.healthMode='manual';o.health=v.health}if(v.progress===''){o.progressMode='auto'}else{o.progressMode='manual';o.progress=+v.progress}
-    if(isNew)D.projects.push({id:uid(),created:TODAY(),...o});else Object.assign(p,o)},isNew?null:()=>{D.projects=D.projects.filter(x=>x.id!==p.id);D.tasks.forEach(t=>{if(t.projectId===p.id)t.projectId=''})});
-  const box=$('#msl');box.oninput=box.onchange=e=>{const d=e.target.dataset;if(d.mn)ms[d.mn].name=e.target.value;if(d.md)ms[d.md].date=e.target.value;if(d.mc)ms[d.mc].done=e.target.checked};
-  box.onclick=e=>{if(e.target.dataset.mx){ms.splice(+e.target.dataset.mx,1);box.innerHTML=msHTML()}};$('#msa').onclick=()=>{ms.push({id:uid(),name:'',date:'',done:false});box.innerHTML=msHTML()}};
-window.editRisk=(r)=>{const isNew=!r;r=r||{prob:3,impact:3,status:'open'};const sc=[1,2,3,4,5].map(n=>`<option ${n==r.prob?'selected':''}>${n}</option>`).join(''),si=[1,2,3,4,5].map(n=>`<option ${n==r.impact?'selected':''}>${n}</option>`).join('');
-  dialog(`<h2 style="margin:0">Риск</h2><label>Описание<input name="title" required value="${esc(r.title||'')}"></label><div class="f2"><label>Проект<select name="projectId">${popt(r.projectId)}</select></label><label>Owner<input name="owner" value="${esc(r.owner||'')}"></label>
-  <label>Вероятность (1–5)<select name="prob">${sc}</select></label><label>Влияние (1–5)<select name="impact">${si}</select></label><label>Статус<select name="status">${opt({open:'Открыт',watch:'Мониторинг',closed:'Закрыт'},r.status)}</select></label><label>Дата пересмотра<input type="date" name="review" value="${r.review||''}"></label></div>
-  <label>Митигация / план реагирования<textarea name="mitigation">${esc(r.mitigation||'')}</textarea></label>`,v=>{v.prob=+v.prob;v.impact=+v.impact;if(isNew)D.risks.push({id:uid(),created:TODAY(),...v});else Object.assign(r,v)},isNew?null:()=>D.risks=D.risks.filter(x=>x.id!==r.id))};
+  <label>Цель<textarea name="goal">${esc(p.goal||'')}</textarea></label><label>Факт<textarea name="result">${esc(p.result||'')}</textarea></label>
+  <div class="card"><div class="row" style="justify-content:space-between"><b>Вехи</b><button type="button" class="ghost" id="addMs">+ Веха</button></div><div id="msBox" style="display:grid;gap:6px;margin-top:8px">${msHTML()}</div></div>`,
+  v=>{p=p||{};p.name=v.name;p.owner=v.owner;p.stage=v.stage;p.start=v.start;p.end=v.end;p.goal=v.goal;p.result=v.result;
+    p.healthMode=v.health==='auto'?'auto':'manual';if(v.health!=='auto')p.health=v.health;
+    p.progressMode=v.progress===''?'auto':'manual';p.progress=v.progress===''?'':+v.progress;
+    p.milestones=ms;if(isNew){p.id=uid();D.projects.push(p)}},isNew?null:()=>{D.projects=D.projects.filter(x=>x.id!==p.id);D.tasks.filter(t=>t.projectId===p.id).forEach(t=>t.projectId='')});
+  const box=$('#msBox');const redraw=()=>box.innerHTML=msHTML();
+  $('#addMs').onclick=()=>{ms.push({name:'',date:'',done:false});redraw()};
+  box.oninput=e=>{const i=+e.target.dataset.mn;if(Number.isFinite(i))ms[i].name=e.target.value;const d=+e.target.dataset.md;if(Number.isFinite(d))ms[d].date=e.target.value};
+  box.onchange=e=>{const c=+e.target.dataset.mc;if(Number.isFinite(c))ms[c].done=e.target.checked};
+  box.onclick=e=>{const x=+e.target.dataset.mx;if(Number.isFinite(x)){ms.splice(x,1);redraw()}}};
+
+window.editRisk=(r)=>{const isNew=!r;r=r||{status:'open',prob:3,impact:3};
+  dialog(`<h2 style="margin:0">${isNew?'Новый риск':'Риск'}</h2><label>Риск<input name="title" required value="${esc(r.title||'')}"></label>
+  <div class="f2"><label>Проект<select name="projectId">${popt(r.projectId)}</select></label><label>Owner<input name="owner" value="${esc(r.owner||'')}"></label>
+  <label>Вероятность<select name="prob">${[1,2,3,4,5].map(x=>`<option ${x==r.prob?'selected':''}>${x}</option>`).join('')}</select></label><label>Влияние<select name="impact">${[1,2,3,4,5].map(x=>`<option ${x==r.impact?'selected':''}>${x}</option>`).join('')}</select></label>
+  <label>Статус<select name="status">${opt({open:'Открыт',watch:'Мониторинг',closed:'Закрыт'},r.status)}</select></label><span></span></div>
+  <label>Митигация<textarea name="mitigation">${esc(r.mitigation||'')}</textarea></label>`,
+  v=>{Object.assign(r,v,{prob:+v.prob,impact:+v.impact});if(isNew){r.id=uid();D.risks.push(r)}},isNew?null:()=>{D.risks=D.risks.filter(x=>x.id!==r.id)})};
+
 window.editMeeting=(m)=>{const isNew=!m;m=m||{date:TODAY()};
-  dialog(`<h2 style="margin:0">Встреча</h2><div class="f2"><label>Тема<input name="title" required value="${esc(m.title||'')}"></label><label>Дата<input type="date" name="date" required value="${m.date}"></label><label>Проект<select name="projectId">${popt(m.projectId)}</select></label><label>Участники<input name="participants" value="${esc(m.participants||'')}"></label></div>
-  <label>Заметки<textarea name="notes">${esc(m.notes||'')}</textarea></label><label>Решения<textarea name="decisions">${esc(m.decisions||'')}</textarea></label>
-  <label>Новые задачи (по одной на строку: «задача | исполнитель | срок ГГГГ-ММ-ДД | ждём от»)<textarea name="actions" placeholder="Подготовить ТЗ | | 2026-10-15"></textarea></label>`,
-  v=>{const acts=v.actions;delete v.actions;if(isNew){m={id:uid(),...v};D.meetings.push(m)}else Object.assign(m,v);
-    (acts||'').split('\n').map(s=>s.trim()).filter(Boolean).forEach(l=>{const[a,b,c,w]=l.split('|').map(x=>(x||'').trim());D.tasks.push({id:uid(),title:a,assignee:b,projectId:m.projectId,status:w?'waiting':'todo',waitingFor:w,waitingSince:w?TODAY():'',due:c,priority:'P3',recur:'none',deps:[],meetingId:m.id,created:TODAY()})})},isNew?null:()=>D.meetings=D.meetings.filter(x=>x.id!==m.id))};
+  dialog(`<h2 style="margin:0">${isNew?'Новая встреча':'Встреча'}</h2><label>Название<input name="title" required value="${esc(m.title||'')}"></label>
+  <div class="f2"><label>Дата<input type="date" name="date" value="${m.date||TODAY()}"></label><label>Проект<select name="projectId">${popt(m.projectId)}</select></label></div>
+  <label>Участники<input name="participants" value="${esc(m.participants||'')}"></label><label>Заметки<textarea name="notes">${esc(m.notes||'')}</textarea></label><label>Решения<textarea name="decisions">${esc(m.decisions||'')}</textarea></label>
+  <label>Задачи из встречи (по одной на строку: задача | исполнитель | срок ГГГГ-ММ-ДД | ждём от)<textarea name="tasks"></textarea></label>`,
+  v=>{Object.assign(m,v);if(isNew){m.id=uid();D.meetings.push(m)}const lines=(v.tasks||'').split('\n').map(s=>s.trim()).filter(Boolean);lines.forEach(s=>{const[a,b,c,d]=s.split('|').map(x=>(x||'').trim());D.tasks.push({id:uid(),title:a,assignee:b,due:c,waitingFor:d,meetingId:m.id,projectId:m.projectId||'',priority:'P2',status:d?'waiting':'todo',expected:'',created:TODAY()})})},isNew?null:()=>{D.meetings=D.meetings.filter(x=>x.id!==m.id)})};
 
-window.demo=()=>{if(D.tasks.length&&!confirm('Добавить демо-данные к существующим?'))return;const t=TODAY(),p1=uid(),p2=uid(),a=uid(),b=uid(),c=uid();
-  D.projects.push({id:p1,name:'Внедрение мониторинга',owner:'А. Мурашкин',stage:'Исполнение',healthMode:'auto',progressMode:'auto',start:addD(t,-20),end:addD(t,40),goal:'Покрыть 100% критичных сервисов мониторингом, MTTR −30%',milestones:[{id:uid(),name:'Пилот завершён',date:addD(t,5),done:false},{id:uid(),name:'Тиражирование',date:addD(t,35),done:false}]},
-   {id:p2,name:'Настройка SLA в JSM',owner:'Команда ITSM',stage:'Планирование',healthMode:'auto',progressMode:'auto',start:addD(t,-5),end:addD(t,25),goal:'SLA по всем типам заявок',milestones:[{id:uid(),name:'Согласование матрицы SLA',date:addD(t,7),done:false}]});
-  D.tasks.push({id:a,title:'Собрать требования к алертам',projectId:p1,status:'done',priority:'P1',start:addD(t,-18),due:addD(t,-12),doneAt:addD(t,-11),expected:'Список алертов по сервисам',actual:'Согласовано 42 алерта',deps:[],created:addD(t,-20)},
-   {id:b,title:'Настроить дашборды пилота',projectId:p1,status:'doing',priority:'P1',start:addD(t,-10),due:addD(t,-1),expected:'Дашборды для 5 сервисов',deps:[a],created:addD(t,-10)},
-   {id:c,title:'Оценка ROI пилота',projectId:p1,status:'todo',priority:'P2',start:addD(t,1),due:addD(t,6),expected:'Бизнес-кейс для тиражирования',deps:[b],created:t},
-   {id:uid(),title:'Получить доступы к Zabbix',projectId:p1,status:'waiting',waitingFor:'ИБ',waitingSince:addD(t,-3),priority:'P2',start:addD(t,-3),due:t,deps:[],created:addD(t,-3)},
-   {id:uid(),title:'Статус-отчёт руководству',projectId:'',status:'todo',priority:'P2',recur:'weekly',start:t,due:t,expected:'Отчёт отправлен',deps:[],created:t},
-   {id:uid(),title:'Матрица SLA по приоритетам',projectId:p2,status:'todo',priority:'P1',start:t,due:addD(t,4),deps:[],created:t},
-   {id:uid(),title:'Изучить плагин Time to SLA',projectId:p2,status:'backlog',priority:'P4',deps:[],created:t});
-  D.risks.push({id:uid(),title:'Задержка доступов от ИБ',projectId:p1,prob:4,impact:4,status:'open',owner:'А. Мурашкин',mitigation:'Эскалация через руководителя ИБ'});
-  D.meetings.push({id:uid(),title:'Статус пилота',date:addD(t,-2),projectId:p1,participants:'ИТ, ИБ',notes:'Обсудили прогресс',decisions:'Расширить пилот на 2 сервиса'});save()};
+window.bulkAdd=()=>dialog(`<h2 style="margin:0">Добавить задачи списком</h2>
+  <label>Проект<select name="projectId">${popt('')}</select></label>
+  <label>Формат: <code>задача | исполнитель | срок ГГГГ-ММ-ДД | приоритет | желаемый результат</code><textarea name="list" style="min-height:220px" placeholder="Подготовить отчёт | Иванов | 2026-10-15 | P1 | Черновик отчёта"></textarea></label>`,
+  v=>{(v.list||'').split('\n').map(s=>s.trim()).filter(Boolean).forEach(s=>{const[a,b,c,d,e]=s.split('|').map(x=>(x||'').trim());D.tasks.push({id:uid(),title:a,assignee:b,due:c,priority:d||'P3',expected:e||'',projectId:v.projectId||'',status:'todo',created:TODAY(),recur:'none',deps:[]})})});
 
-if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-syncLabel();render();if(cfg.url&&navigator.onLine&&!dirty)pull();
-$('#syncBtn').addEventListener('click',()=>cfg.url?(dirty?push():pull()):go('settings'));
-$('#setBtn').addEventListener('click',()=>go('settings'));
+window.mergeJ=f=>f.text().then(t=>{const j=normalizeData(JSON.parse(t));['projects','tasks','risks','meetings','reviews'].forEach(k=>D[k]=[...D[k],...j[k]]);save()});
 
-/* ---------- массовое добавление и импорт ---------- */
-function findProject(n){if(!n)return'';n=String(n).trim();let p=D.projects.find(x=>x.id===n||x.name.toLowerCase()===n.toLowerCase());if(!p){p={id:uid(),name:n,stage:'Планирование',healthMode:'auto',progressMode:'auto',milestones:[],created:TODAY()};D.projects.push(p)}return p.id}
-const PRI=v=>{v=String(v||'').toUpperCase().trim();return/^P[1-4]$/.test(v)?v:'P3'};
-function addTasks(list){let n=0;list.forEach(o=>{if(!o||!(o.title||o.Задача))return;const st=Object.keys(ST).includes(o.status)?o.status:'todo';
-  D.tasks.push({id:uid(),title:o.title||o.Задача,projectId:findProject(o.project||o.Проект||o.projectId),assignee:o.assignee||o.Исполнитель||'',priority:PRI(o.priority||o.Приоритет),status:st,start:o.start||'',due:o.due||o.Срок||'',expected:o.expected||'',waitingFor:o.waitingFor||'',waitingSince:st==='waiting'?TODAY():'',recur:REC[o.recur]?o.recur:'none',notes:o.notes||'',deps:[],created:TODAY()});n++});return n}
-window.bulkAdd=()=>{dialog(`<h2 style="margin:0">Добавить задачи списком</h2><label>Проект по умолчанию<select name="projectId">${popt(F.project)}</select></label>
-  <label>Одна задача на строку: «задача | исполнитель | срок ГГГГ-ММ-ДД | приоритет P1–P4 | желаемый результат»<textarea name="lines" style="min-height:200px" placeholder="Подготовить ТЗ на дашборды | Иванов | 2026-10-20 | P1 | ТЗ согласовано"></textarea></label>
-  <label>…или вставьте JSON-массив задач, который подготовил ассистент<textarea name="json" placeholder='[{"title":"...","project":"...","assignee":"...","due":"2026-10-20","priority":"P2"}]'></textarea></label>`,
-  v=>{let list=v.lines.split('\n').map(x=>x.trim()).filter(Boolean).map(l=>{const[a,b,c,d,e]=l.split('|').map(x=>(x||'').trim());return{title:a.replace(/^[-*•\d.)\s]+/,''),assignee:b,due:c,priority:d,expected:e,project:v.projectId}});
-    if(v.json.trim()){try{list=list.concat(JSON.parse(v.json))}catch(e){alert('JSON не распознан')}}alert('Добавлено задач: '+addTasks(list))})};
-window.mergeJ=f=>f.text().then(t=>{const j=JSON.parse(t);if(Array.isArray(j))return(alert('Добавлено задач: '+addTasks(j)),save());
-  ['projects','tasks','risks','meetings','reviews'].forEach(k=>(j[k]||[]).forEach(x=>{const i=D[k].findIndex(y=>y.id===x.id);if(i>=0)D[k][i]=x;else D[k].push(x)}));save()});
-// входящие задачи, добавленные извне в лист inbox
-function takeInbox(j){j.inbox=(j.inbox||[]).filter(x=>!(cfg.taken||[]).includes(String(x.id)));if(j.inbox.length){cfg.taken=[...new Set([...(cfg.taken||[]),...j.inbox.map(x=>String(x.id))])];saveCfg();const n=addTasks(j.inbox);if(n){save();setTimeout(()=>alert('Из входящих (лист inbox) добавлено задач: '+n),50)}}}
+window.demo=()=>{if(!confirm('Загрузить демо-данные?'))return;
+  D={projects:[{id:uid(),name:'Внедрение мониторинга',owner:'Иванов',stage:'Исполнение',start:TODAY(),end:addD(TODAY(),45),goal:'Запуск системы мониторинга',result:'',healthMode:'auto',progressMode:'auto',milestones:[{name:'Подписать ТЗ',date:addD(TODAY(),7),done:false},{name:'Пилот',date:addD(TODAY(),21),done:false}]}],tasks:[],risks:[],meetings:[],reviews:[]};
+  const pid=D.projects[0].id;
+  D.tasks.push({id:uid(),title:'Согласовать KPI',projectId:pid,assignee:'Иванов',priority:'P1',status:'doing',start:TODAY(),due:addD(TODAY(),2),expected:'Утверждённый список KPI',actual:'',created:TODAY(),recur:'none',deps:[]});
+  D.tasks.push({id:uid(),title:'Настроить алерты',projectId:pid,assignee:'Петров',priority:'P2',status:'waiting',start:TODAY(),due:addD(TODAY(),5),waitingFor:'Команда DevOps',waitingSince:TODAY(),expected:'5 алертов в проде',actual:'',created:TODAY(),recur:'none',deps:[]});
+  D.risks.push({id:uid(),title:'Нет доступа к логам',projectId:pid,owner:'Петров',prob:4,impact:4,status:'open',mitigation:'Эскалировать в инфраструктуру'});
+  D.meetings.push({id:uid(),title:'Статус-поинт',projectId:pid,date:TODAY(),participants:'Иванов, Петров',notes:'Обсудили сроки',decisions:'Пилот до конца месяца'});
+  save()};
+
+window.takeInbox=j=>{const inbox=(j&&Array.isArray(j.inbox))?j.inbox:[];if(!inbox.length)return;
+  cfg.taken=cfg.taken||[];
+  let added=0;
+  inbox.forEach(x=>{
+    const projectName=(x.project||'').trim();
+    let projectId='';
+    if(projectName){
+      let p=D.projects.find(p=>String(p.name||'').trim()===projectName);
+      if(!p){p={id:uid(),name:projectName,owner:'',stage:'Планирование',start:'',end:'',goal:'',result:'',healthMode:'auto',progressMode:'auto',milestones:[]};D.projects.push(p)}
+      projectId=p.id
+    }
+    D.tasks.push({id:uid(),title:x.title||'Без названия',projectId,assignee:x.assignee||'',due:x.due||'',priority:x.priority||'P3',expected:x.expected||'',status:x.status||'todo',notes:x.notes||'',created:TODAY(),recur:'none',deps:[],waitingFor:''});
+    if(x.id)cfg.taken.push(String(x.id));
+    added++
+  });
+  save();
+  alert('Из входящих добавлено задач: '+added);
+};
+
+document.addEventListener('DOMContentLoaded',()=>{
+  if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  $('#syncBtn').onclick=()=>pull();
+  $('#setBtn').onclick=()=>go('settings');
+  syncLabel();
+  render();
+});
